@@ -1,67 +1,86 @@
-var traverse = require('traverse');
+var d3 = require('d3'),
+    parse = require('../');
 
-// from https://github.com/madprime/python-gedcom/blob/master/gedcom/__init__.py
-// * Level must start with nonnegative int, no leading zeros.
-// * Pointer optional, if it exists it must be flanked by '@'
-// * Tag must be alphanumeric string
-// * Value optional, consists of anything after a space to end of line
-//   End of line defined by \n or \r
-var lineRe = /\s*(0|[1-9]+[0-9]*) (@[^@]+@ |)([A-Za-z0-9_]+)( [^\n\r]*|)/;
+var width = window.innerWidth,
+    height = window.innerHeight;
 
-function parse(input) {
-    var start = { root: { tree: [] }, level: 0 };
-    start.pointer = start.root;
+var color = d3.scale.category20();
 
-    return traverse(input
-        .split('\n')
-        .map(mapLine)
-        .filter(function(_) { return _; })
-        .reduce(buildTree, start)
-        .root.tree).map(function(node) {
-            delete node.up;
-            delete node.level;
-            this.update(node);
-        });
+var force = d3.layout.force()
+    .charge(-100)
+    .linkDistance(20)
+    .size([width, height]);
 
-    // the basic trick of this module is turning the suggested tree
-    // structure of a GEDCOM file into a tree in JSON. This reduction
-    // does that. The only real trick is the `.up` member of objects
-    // that points to a level up in the structure. This we have to
-    // censor before JSON.stringify since it creates circular references.
-    function buildTree(memo, data) {
-        if (data.level === memo.level) {
-            memo.pointer.tree.push(data);
-        } else if (data.level > memo.level) {
-            var up = memo.pointer;
-            memo.pointer = memo.pointer.tree[
-                memo.pointer.tree.length - 1];
-                memo.pointer.tree.push(data);
-                memo.pointer.up = up;
-                memo.level = data.level;
-        } else if (data.level < memo.level) {
-            // the jump up in the stack may be by more than one, so ascend
-            // until we're at the right level.
-            while (data.level <= memo.pointer.level && memo.pointer.up) {
-                memo.pointer = memo.pointer.up;
-            }
-            memo.pointer.tree.push(data);
-            memo.level = data.level;
-        }
-        return memo;
+    function over() {
+        d3.event.stopPropagation();
+        d3.event.preventDefault();
+        d3.event.dataTransfer.dropEffect = 'copy';
     }
 
-    function mapLine(data) {
-        var match = data.match(lineRe);
-        if (!match) return null;
-        return {
-            level: parseInt(match[1], 10),
-            pointer: match[2].trim(),
-            tag: match[3].trim(),
-            data: match[4].trim(),
-            tree: []
+var svg = d3.select('body').append('svg')
+    .attr('width', width)
+    .attr('height', height)
+    .attr('dropzone', 'copy')
+    .on('drop', function(e) {
+        d3.event.stopPropagation();
+        d3.event.preventDefault();
+        var f = d3.event.dataTransfer.files[0],
+            reader = new FileReader();
+
+        reader.onload = function(e) {
+            dropHint.remove();
+            buildGraph(parse.d3ize(parse.parse(e.target.result)));
         };
-    }
-}
 
-module.exports.parse = parse;
-module.exports.d3ize = require('./d3ize');
+        reader.readAsText(f);
+    })
+    .on('dragenter', over)
+    .on('dragexit', over)
+    .on('dragover', over);
+
+var dropHint = svg.append('text')
+    .text('Drop a GEDCOM file here')
+    .attr('class', 'hint')
+    .attr('text-anchor', 'middle')
+    .attr('transform', 'translate(' + [window.innerWidth / 2, window.innerHeight / 2] + ')');
+
+function buildGraph(graph) {
+  force
+      .nodes(graph.nodes)
+      .links(graph.links)
+      .start();
+
+  var link = svg.selectAll('.link')
+      .data(graph.links)
+    .enter().append('line')
+      .attr('class', 'link')
+      .style('stroke-width', function(d) { return Math.sqrt(d.value); });
+
+  function lastName(n) {
+      var parts =  n.split(/\s/);
+      return n[n.length - 1];
+  }
+
+  var node = svg.selectAll('.node')
+      .data(graph.nodes)
+    .enter().append('g')
+      .attr('class', 'node')
+      .call(force.drag);
+
+  node.append('circle')
+      .attr('r', function(d) { return 5; })
+      .style('fill', function(d) { return color(lastName(d.name)); });
+
+  node.append('text')
+      .text(function(d) { return d.name; });
+
+  force.on('tick', function() {
+    link.attr('x1', function(d) { return d.source.x; })
+        .attr('y1', function(d) { return d.source.y; })
+        .attr('x2', function(d) { return d.target.x; })
+        .attr('y2', function(d) { return d.target.y; });
+
+    node.attr('transform', function(d) {
+        return 'translate(' + [d.x, d.y] + ')'; });
+  });
+}
